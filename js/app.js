@@ -226,7 +226,6 @@ function renderDuel() {
   const total = roundPlan.length;
   const percent = total > 0 ? Math.floor((duelIndex / total) * 100) : 0;
 
-  // 進捗表示をパーセント表記に変更
   duelProgressText.textContent = `選択 ${percent}%`;
   duelProgressBar.style.width = `${percent}%`;
 
@@ -295,7 +294,6 @@ function updateEloRatings(winner, participants) {
 
     const loserRating = eloRatings.get(loser.id) ?? INITIAL_RATING;
 
-    // 勝利確率は 1 / (1 + 10^((R_loser - R_winner) / 400))
     const expectedWinner = 1 / (1 + Math.pow(10, (loserRating - winnerRating) / 400));
     const expectedLoser = 1 / (1 + Math.pow(10, (winnerRating - loserRating) / 400));
 
@@ -330,7 +328,6 @@ function startDuel() {
     return;
   }
 
-  // 初期レート1500、出場回数0にリセット
   eloRatings = new Map(MEMBERS.map(member => [member.id, INITIAL_RATING]));
   appearanceCounts = new Map(MEMBERS.map(member => [member.id, 0]));
 
@@ -352,7 +349,10 @@ function startDuel() {
 function renderResult() {
   resultGrid.replaceChildren();
 
-  selectedMembers.forEach((member, index) => {
+  selectedMembers.forEach(item => {
+    const member = item.member;
+    const rankNum = item.rank;
+
     const card = document.createElement("article");
     card.className = "result-card";
 
@@ -362,7 +362,7 @@ function renderResult() {
 
     const rank = document.createElement("span");
     rank.className = "result-rank";
-    rank.textContent = `${index + 1}位`;
+    rank.textContent = `${rankNum}位`;
     photo.appendChild(rank);
 
     const name = document.createElement("div");
@@ -399,7 +399,22 @@ function finishDuel() {
   }
 
   const sorted = getSortedMembers();
-  selectedMembers = sorted.slice(0, 9);
+  const top9 = sorted.slice(0, 9);
+
+  // 1位〜9位のメンバーに順位オブジェクトを対応付け
+  const ranked = top9.map((member, index) => ({
+    member,
+    rank: index + 1
+  }));
+
+  // 指定の並び順（4位, 5位, 6位 / 2位, 1位, 3位 / 7位, 8位, 9位）に再配置
+  // 配列インデックス: [3] 4位, [4] 5位, [5] 6位, [1] 2位, [0] 1位, [2] 3位, [6] 7位, [7] 8位, [8] 9位
+  selectedMembers = [
+    ranked[3], ranked[4], ranked[5],
+    ranked[1], ranked[0], ranked[2],
+    ranked[6], ranked[7], ranked[8]
+  ];
+
   showResult();
 }
 
@@ -414,8 +429,10 @@ function makeResultText() {
     ""
   ];
 
-  selectedMembers.forEach((member, index) => {
-    lines.push(`${index + 1}位：${member.name}（${member.group}）`);
+  // テキストコピーは順位順(1位〜9位)に出力する
+  const sortedByRank = [...selectedMembers].sort((a, b) => a.rank - b.rank);
+  sortedByRank.forEach(item => {
+    lines.push(`${item.rank}位：${item.member.name}（${item.member.group}）`);
   });
 
   return lines.join("\n");
