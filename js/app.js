@@ -1,5 +1,5 @@
 /* ==========================================
-   ワートリ好き顔メーカー (高度確率配分＆階層別マッチング版)
+   ワートリ好き顔メーカー (Eloレーティング＆近接レートマッチング版)
    ========================================== */
 
 const TOTAL_ROUNDS = 150;
@@ -9,6 +9,10 @@ const ROUND_COUNTS = [
   { size: 3, count: 50 },
   { size: 2, count: 50 }
 ];
+
+// Eloレーティングの基本設定
+const INITIAL_RATING = 1500;
+const K_FACTOR = 32; // 変動係数（大きめにして順位変動をスピーディに）
 
 const $ = selector => document.querySelector(selector);
 
@@ -34,14 +38,13 @@ const copyButton = $("#copy-button");
 let currentMode = "start";
 let selectedMembers = [];
 
-let choiceCounts = new Map();
+// Eloレートおよび出場回数データ
+let eloRatings = new Map();
 let appearanceCounts = new Map();
 
 let roundPlan = [];
 let duelIndex = 0;
-
-// 直近の選択履歴（ポイント差の無さを判定するため）
-let recentChoiceHistory = [];
+let currentRoundMembers = [];
 
 // ==========================================
 // 共通関数
@@ -118,12 +121,12 @@ function startDuel() {
     return;
   }
 
-  choiceCounts = new Map(MEMBERS.map(member => [member.id, 0]));
+  // 初期レート1500、出場回数0にリセット
+  eloRatings = new Map(MEMBERS.map(member => [member.id, INITIAL_RATING]));
   appearanceCounts = new Map(MEMBERS.map(member => [member.id, 0]));
 
   selectedMembers = [];
   duelIndex = 0;
-  recentChoiceHistory = [];
   roundPlan = buildRoundPlan();
 
   duelFinishButton.disabled = true;
@@ -136,53 +139,35 @@ function startDuel() {
 startButton.addEventListener("click", startDuel);
 
 // ==========================================
-// 現在のランキングリストを取得
+// 現在のランキングリストを取得 (Eloレーティング降順)
 // ==========================================
 
 function getSortedMembers() {
   return [...MEMBERS].sort((a, b) => {
-    const winA = choiceCounts.get(a.id) || 0;
-    const winB = choiceCounts.get(b.id) || 0;
-    const appA = appearanceCounts.get(a.id) || 0;
-    const appB = appearanceCounts.get(b.id) || 0;
-
-    const rateA = appA > 0 ? winA / appA : 0;
-    const rateB = appB > 0 ? winB / appB : 0;
+    const rateA = eloRatings.get(a.id) ?? INITIAL_RATING;
+    const rateB = eloRatings.get(b.id) ?? INITIAL_RATING;
 
     if (rateA !== rateB) return rateB - rateA;
-    if (winA !== winB) return winB - winA;
-    return appB - appA;
+
+    // レートが完全一致の場合は登場回数が少ない方を上位（補正）
+    const appA = appearanceCounts.get(a.id) || 0;
+    const appB = appearanceCounts.get(b.id) || 0;
+    return appA - appB;
   });
 }
 
 // ==========================================
-// ポイント差がついているか判定（膠着状態チェック）
-// ==========================================
-
-function isPointStagnant() {
-  // 過去10回で上位陣の入れ替わりやポイント変動が乏しいか
-  if (recentChoiceHistory.length < 10) return false;
-  const recentWinners = recentChoiceHistory.slice(-8);
-  const uniqueWinners = new Set(recentWinners);
-  
-  // 直近8回で選ばれた人が1〜2種類に偏っている場合（差がつかなくなっている）
-  return uniqueWinners.size <= 2;
-}
-
-// ==========================================
-// 高度マッチメイキング・選択肢抽選
+// Eloマッチメイキング（レートの近い者同士を選定）
 // ==========================================
 
 function getRoundMembers(requestedSize) {
-  const totalCount = MEMBERS.length;
   const unappeared = MEMBERS.filter(m => (appearanceCounts.get(m.id) || 0) === 0);
 
-  // 1. 未登場が存在する場合の処理
+  // 1. 未登場メンバーが残っている場合（序盤）
   if (unappeared.length > 0) {
     if (unappeared.length >= requestedSize) {
       return getRandomFromList(unappeared, requestedSize);
     }
-    // 未登場をすべて含めつつ、残りを1出場のメンバーで補う
     const selected = [...unappeared];
     const excludeSet = new Set(selected.map(m => m.id));
     const restNeeded = requestedSize - selected.length;
@@ -190,96 +175,40 @@ function getRoundMembers(requestedSize) {
     return [...selected, ...others];
   }
 
-  // 2. 一巡達成直後（ポイント差がまだ浅い初期段階）
-  const totalAppearances = Array.from(appearanceCounts.values()).reduce((a, b) => a + b, 0);
-  if (totalAppearances < totalCount * 2) {
-    const chosenMembers = MEMBERS.filter(m => (choiceCounts.get(m.id) || 0) > 0);
-    const unchosenMembers = MEMBERS.filter(m => (choiceCounts.get(m.id) || 0) === 0);
-
-    const pickChosen = getRandomFromList(chosenMembers, 2);
-    const excludeSet = new Set(pickChosen.map(m => m.id));
-    const pickUnchosen = getRandomFromList(unchosenMembers, 2, excludeSet);
-
-    const pool = [...pickChosen, ...pickUnchosen];
-    if (pool.length < requestedSize) {
-      const rest = getRandomFromList(MEMBERS, requestedSize - pool.length, new Set(pool.map(m => m.id)));
-      return [...pool, ...rest];
-    }
-    return pool.slice(0, requestedSize);
-  }
-
-  // 3. ポイント差がついた後の動的マッチメイキング
-  let size = requestedSize;
-
-  // 差がつかなくなっている（膠着状態）なら上位選出のために4択・3択へ切り替え
-  if (isPointStagnant()) {
-    if (size === 2) size = 3;
-    else if (size === 3) size = 4;
-  }
-
+  // 2. Eloレーティングに基づくマッチング（レーティングの近いライバル同士を対戦させる）
   const sorted = getSortedMembers();
-
-  // 各階層の定義
-  const top9 = sorted.slice(0, 9);
-  const highTier = sorted.slice(9, Math.min(49, totalCount));
   
-  const midIndex = Math.floor(totalCount / 2);
-  const midStart = Math.max(9, midIndex - 25);
-  const midEnd = Math.min(totalCount - 1, midIndex + 25);
-  const midTier = sorted.slice(midStart, midEnd);
+  // 起点となる基準メンバーを1人ランダム（出場回数が少なめの候補から優先選出）
+  const minApps = Math.min(...Array.from(appearanceCounts.values()));
+  const candidatesForSeed = MEMBERS.filter(m => (appearanceCounts.get(m.id) || 0) <= minApps + 2);
+  const seedPool = candidatesForSeed.length > 0 ? candidatesForSeed : MEMBERS;
+  const seed = shuffle(seedPool)[0];
 
-  const lowStart = Math.max(9, totalCount - 40);
-  const lowTier = sorted.slice(lowStart, totalCount);
+  const seedIndex = sorted.findIndex(m => m.id === seed.id);
+  
+  // 基準メンバーの順位周辺（±8人程度）から対戦相手を選ぶ
+  const windowSize = Math.max(8, requestedSize * 2);
+  let startIdx = Math.max(0, seedIndex - Math.floor(windowSize / 2));
+  let endIdx = Math.min(sorted.length, startIdx + windowSize);
 
-  const excludeSet = new Set();
-  const selected = [];
-
-  // ① 上位9位までのキャラ1枠（ランダム）
-  const p1 = getRandomFromList(top9, 1, excludeSet);
-  if (p1.length > 0) { selected.push(p1[0]); excludeSet.add(p1[0].id); }
-
-  if (size === 4) {
-    // ② 高確率枠 (1枠)
-    const p2 = getRandomFromList(highTier, 1, excludeSet);
-    if (p2.length > 0) { selected.push(p2[0]); excludeSet.add(p2[0].id); }
-
-    // ③ 中確率枠 (1枠)
-    const p3 = getRandomFromList(midTier, 1, excludeSet);
-    if (p3.length > 0) { selected.push(p3[0]); excludeSet.add(p3[0].id); }
-
-    // ④ 低確率枠 (1枠)
-    const p4 = getRandomFromList(lowTier, 1, excludeSet);
-    if (p4.length > 0) { selected.push(p4[0]); excludeSet.add(p4[0].id); }
-
-  } else if (size === 3) {
-    // ② 高確率枠 (1枠)
-    const p2 = getRandomFromList(highTier, 1, excludeSet);
-    if (p2.length > 0) { selected.push(p2[0]); excludeSet.add(p2[0].id); }
-
-    // ③ 中確率(3/5) : 低確率(2/5) 確率選出枠 (1枠)
-    const rand = Math.random();
-    const targetPool = rand < 0.6 ? midTier : lowTier;
-    const p3 = getRandomFromList(targetPool, 1, excludeSet);
-    if (p3.length > 0) { selected.push(p3[0]); excludeSet.add(p3[0].id); }
-
-  } else if (size === 2) {
-    // ② 高確率(5/10) : 中確率(3/10) : 低確率(2/10) 確率選出枠 (1枠)
-    const rand = Math.random();
-    let targetPool = highTier;
-    if (rand >= 0.5 && rand < 0.8) targetPool = midTier;
-    else if (rand >= 0.8) targetPool = lowTier;
-
-    const p2 = getRandomFromList(targetPool, 1, excludeSet);
-    if (p2.length > 0) { selected.push(p2[0]); excludeSet.add(p2[0].id); }
+  if (endIdx - startIdx < windowSize) {
+    startIdx = Math.max(0, endIdx - windowSize);
   }
 
-  // 万が一足りない場合のフォールバック補填
-  if (selected.length < size) {
-    const fill = getRandomFromList(MEMBERS, size - selected.length, excludeSet);
-    selected.push(...fill);
+  const nearbyPool = sorted.slice(startIdx, endIdx);
+  const excludeSet = new Set([seed.id]);
+  const matchedOpponents = getRandomFromList(nearbyPool, requestedSize - 1, excludeSet);
+
+  const result = shuffle([seed, ...matchedOpponents]);
+
+  // 万が一規定数に届かない場合のフォールバック
+  if (result.length < requestedSize) {
+    const currentIds = new Set(result.map(m => m.id));
+    const fill = getRandomFromList(MEMBERS, requestedSize - result.length, currentIds);
+    result.push(...fill);
   }
 
-  return selected.slice(0, size);
+  return result.slice(0, requestedSize);
 }
 
 // ==========================================
@@ -305,9 +234,9 @@ function renderDuel() {
   duelFinishButton.disabled = true;
 
   const baseSize = roundPlan[duelIndex];
-  const roundMembers = getRoundMembers(baseSize);
+  currentRoundMembers = getRoundMembers(baseSize);
 
-  const actualSize = roundMembers.length;
+  const actualSize = currentRoundMembers.length;
   const label = actualSize === 4 ? "四択" : actualSize === 3 ? "三択" : "二択";
 
   duelMessage.textContent = `第${duelIndex + 1}回：${label} — 好きな人を1人選んでね。`;
@@ -319,7 +248,7 @@ function renderDuel() {
     duelCards.style.gridTemplateColumns = "1fr 1fr";
   }
 
-  roundMembers.forEach(member => {
+  currentRoundMembers.forEach(member => {
     appearanceCounts.set(
       member.id,
       (appearanceCounts.get(member.id) || 0) + 1
@@ -348,19 +277,39 @@ function renderDuel() {
 }
 
 // ==========================================
+// Eloレーティングの計算と更新
+// ==========================================
+
+function updateEloRatings(winner, participants) {
+  const winnerRating = eloRatings.get(winner.id) ?? INITIAL_RATING;
+
+  participants.forEach(loser => {
+    if (loser.id === winner.id) return;
+
+    const loserRating = eloRatings.get(loser.id) ?? INITIAL_RATING;
+
+    // 勝利確率 (E_A, E_B) の計算式
+    const expectedWinner = 1 / (1 + Math.pow(10, (loserRating - winnerRating) / 400));
+    const expectedLoser = 1 / (1 + Math.pow(10, (winnerRating - loserRating) / 400));
+
+    // 勝者と敗者のレーティング変動
+    const newWinnerRating = eloRatings.get(winner.id) + K_FACTOR * (1 - expectedWinner);
+    const newLoserRating = loserRating + K_FACTOR * (0 - expectedLoser);
+
+    eloRatings.set(winner.id, newWinnerRating);
+    eloRatings.set(loser.id, newLoserRating);
+  });
+}
+
+// ==========================================
 // 選択結果を記録
 // ==========================================
 
-function chooseDuelWinner(member) {
+function chooseDuelWinner(winnerMember) {
   if (duelIndex >= roundPlan.length) return;
 
-  choiceCounts.set(
-    member.id,
-    (choiceCounts.get(member.id) || 0) + 1
-  );
-
-  recentChoiceHistory.push(member.id);
-  if (recentChoiceHistory.length > 20) recentChoiceHistory.shift();
+  // Eloレートのアップデート実行
+  updateEloRatings(winnerMember, currentRoundMembers);
 
   duelIndex++;
   renderDuel();
@@ -384,7 +333,7 @@ restartFromResultButton.addEventListener("click", () => {
 });
 
 // ==========================================
-// 勝利数・勝率を基準に上位9人を選出
+// レーティング上位9人を選出
 // ==========================================
 
 function finishDuel() {
