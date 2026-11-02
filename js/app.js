@@ -516,5 +516,15 @@ if (saveButton) {
   });
 }
 
-// 初期化表示
-showMode("start");
+// ==========================================
+// アプリ初期化
+// ==========================================
+function initApp() {
+  eloRatings = new Map(MEMBERS.map(m => [m.id, INITIAL_RATING]));
+  appearanceCounts = new Map(MEMBERS.map(m => [m.id, 0]));
+  roundPlan = buildRoundPlan();
+  showMode("start");
+}
+
+// 読み込み時に初期化を実行
+initApp();
