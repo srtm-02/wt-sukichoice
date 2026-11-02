@@ -226,7 +226,8 @@ function renderDuel() {
   const total = roundPlan.length;
   const percent = total > 0 ? Math.floor((duelIndex / total) * 100) : 0;
 
-  duelProgressText.textContent = `選択 ${duelIndex} / ${total}`;
+  // 進捗表示をパーセント表記に変更
+  duelProgressText.textContent = `選択 ${percent}%`;
   duelProgressBar.style.width = `${percent}%`;
 
   if (duelIndex >= total) {
