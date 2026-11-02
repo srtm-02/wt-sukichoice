@@ -83,9 +83,9 @@ function getRandomFromList(list, count = 1, excludeIds = new Set()) {
 
 // 進行度に応じた動的なK値（変動幅）を取得
 function getCurrentKFactor() {
-  if (duelIndex < 60) return 40;       // 序盤：大きく動かして位置を掴む
-  if (duelIndex < 140) return 24;      // 中盤：安定した調整
-  return 12;                           // 終盤：精密な微調整
+  if (duelIndex < 60) return 40;       // 序盤
+  if (duelIndex < 140) return 24;      // 中盤
+  return 12;                           // 終盤
 }
 
 // ==========================================
@@ -146,7 +146,6 @@ function getSortedMembers() {
 
     if (rateA !== rateB) return rateB - rateA;
 
-    // レートが完全一致の場合は登場回数が少ない方を上位（補正）
     const appA = appearanceCounts.get(a.id) || 0;
     const appB = appearanceCounts.get(b.id) || 0;
     return appA - appB;
@@ -154,13 +153,12 @@ function getSortedMembers() {
 }
 
 // ==========================================
-// 高精度 Eloマッチメイキング
+// マッチメイキング
 // ==========================================
 
 function getRoundMembers(requestedSize) {
   const unappeared = MEMBERS.filter(m => (appearanceCounts.get(m.id) || 0) === 0);
 
-  // 1. 未登場メンバーの補填（最優先）
   if (unappeared.length > 0) {
     if (unappeared.length >= requestedSize) {
       return getRandomFromList(unappeared, requestedSize);
@@ -174,7 +172,6 @@ function getRoundMembers(requestedSize) {
 
   const sorted = getSortedMembers();
 
-  // 2. 終盤（140回以降）：上位陣（Top 15〜20）同士を高確率でぶつけて精度固定
   if (duelIndex >= 140 && Math.random() < 0.65) {
     const topPoolSize = Math.min(20, Math.max(requestedSize + 3, Math.floor(MEMBERS.length * 0.3)));
     const topCandidates = sorted.slice(0, topPoolSize);
@@ -183,7 +180,6 @@ function getRoundMembers(requestedSize) {
     }
   }
 
-  // 3. 通常のマッチング（レーティングの近いライバル同士の対戦）
   const minApps = Math.min(...Array.from(appearanceCounts.values()));
   const candidatesForSeed = MEMBERS.filter(m => (appearanceCounts.get(m.id) || 0) <= minApps + 2);
   const seedPool = candidatesForSeed.length > 0 ? candidatesForSeed : MEMBERS;
@@ -191,7 +187,6 @@ function getRoundMembers(requestedSize) {
 
   const seedIndex = sorted.findIndex(m => m.id === seed.id);
 
-  // 基準メンバーの順位近傍から対戦相手を選出
   const windowSize = Math.max(6, requestedSize * 2);
   let startIdx = Math.max(0, seedIndex - Math.floor(windowSize / 2));
   let endIdx = Math.min(sorted.length, startIdx + windowSize);
@@ -206,7 +201,6 @@ function getRoundMembers(requestedSize) {
 
   const result = shuffle([seed, ...matchedOpponents]);
 
-  // 万が一規定数に届かない場合のフォールバック
   if (result.length < requestedSize) {
     const currentIds = new Set(result.map(m => m.id));
     const fill = getRandomFromList(MEMBERS, requestedSize - result.length, currentIds);
@@ -217,17 +211,16 @@ function getRoundMembers(requestedSize) {
 }
 
 // ==========================================
-// 診断画面を表示
+// 診断画面の表示
 // ==========================================
 
 function renderDuel() {
   duelCards.replaceChildren();
 
   const total = roundPlan.length;
-  // 進捗度をパーセントで算出
   const percent = total > 0 ? Math.floor((duelIndex / total) * 100) : 0;
 
-  // ★「選択 ○%」形式に明示変更
+  // 進捗度をパーセント表記に変更
   if (duelProgressText) {
     duelProgressText.textContent = `選択 ${percent}%`;
   }
@@ -237,7 +230,7 @@ function renderDuel() {
 
   if (duelIndex >= total) {
     duelCards.textContent = "すべての選択が完了しました！";
-    duelMessage.textContent = "お疲れさま！「結果を見る」を押して、上位9人を確認しよう。";
+    if (duelMessage) duelMessage.textContent = "お疲れさま！「結果を見る」を押して、上位9人を確認しよう。";
     if (duelFinishButton) duelFinishButton.disabled = false;
     return;
   }
@@ -254,7 +247,6 @@ function renderDuel() {
     duelMessage.textContent = `第${duelIndex + 1}回：${label} — 好きな人を1人選んでね。`;
   }
 
-  // 選択カード表示グリッドの調整
   if (actualSize > 2) {
     duelCards.style.gridTemplateColumns = "repeat(2, 1fr)";
   } else {
@@ -302,4 +294,227 @@ function updateEloRatings(winner, participants) {
 
     const loserRating = eloRatings.get(loser.id) ?? INITIAL_RATING;
 
-    const
+    const expectedWinner = 1 / (1 + Math.pow(10, (loserRating - winnerRating) / 400));
+    const expectedLoser = 1 - expectedWinner;
+
+    const newWinnerRating = (eloRatings.get(winner.id) ?? INITIAL_RATING) + currentK * (1 - expectedWinner);
+    const newLoserRating = loserRating + currentK * (0 - expectedLoser);
+
+    eloRatings.set(winner.id, newWinnerRating);
+    eloRatings.set(loser.id, newLoserRating);
+  });
+}
+
+function chooseDuelWinner(winnerMember) {
+  if (duelIndex >= roundPlan.length) return;
+
+  updateEloRatings(winnerMember, currentRoundMembers);
+  duelIndex++;
+  renderDuel();
+}
+
+// ==========================================
+// イベントハンドラ & 初期化
+// ==========================================
+
+function startDuel() {
+  if (!Array.isArray(MEMBERS) || MEMBERS.length < 9) {
+    alert("診断には9人以上の登録が必要です。js/members.jsを確認してください。");
+    return;
+  }
+
+  eloRatings = new Map(MEMBERS.map(m => [m.id, INITIAL_RATING]));
+  appearanceCounts = new Map(MEMBERS.map(m => [m.id, 0]));
+
+  selectedMembers = [];
+  duelIndex = 0;
+  roundPlan = buildRoundPlan();
+
+  if (duelFinishButton) duelFinishButton.disabled = true;
+  if (resultMessage) resultMessage.textContent = "";
+
+  showMode("duel");
+  renderDuel();
+}
+
+if (startButton) startButton.addEventListener("click", startDuel);
+
+if (duelRestartButton) {
+  duelRestartButton.addEventListener("click", () => {
+    if (
+      duelIndex === 0 ||
+      window.confirm("最初からやり直す？ 今までの選択結果はリセットされます。")
+    ) {
+      showMode("start");
+    }
+  });
+}
+
+if (restartFromResultButton) {
+  restartFromResultButton.addEventListener("click", () => {
+    showMode("start");
+  });
+}
+
+function finishDuel() {
+  if (!Array.isArray(MEMBERS) || MEMBERS.length < 9 || duelIndex < roundPlan.length) {
+    return;
+  }
+
+  const sorted = getSortedMembers();
+  selectedMembers = sorted.slice(0, 9);
+  showResult();
+}
+
+if (duelFinishButton) duelFinishButton.addEventListener("click", finishDuel);
+
+// ==========================================
+// 結果画面の表示（画像の配置順変更）
+// ==========================================
+
+function renderResult() {
+  resultGrid.replaceChildren();
+
+  // 参考画像に合わせた3x3グリッドの並び順（インデックス）
+  // 1行目: 4位, 5位, 6位
+  // 2行目: 2位, 1位, 3位 (中央に1位)
+  // 3行目: 7位, 8位, 9位
+  const displayOrderIndexes = [3, 4, 5, 1, 0, 2, 6, 7, 8];
+
+  displayOrderIndexes.forEach(rankIndex => {
+    const member = selectedMembers[rankIndex];
+    if (!member) return;
+
+    const card = document.createElement("article");
+    card.className = "result-card";
+
+    const photo = document.createElement("div");
+    photo.className = "result-photo";
+    photo.appendChild(createImage(member));
+
+    const rank = document.createElement("span");
+    rank.className = "result-rank";
+    rank.textContent = `${rankIndex + 1}位`;
+    photo.appendChild(rank);
+
+    const name = document.createElement("div");
+    name.className = "result-name";
+    name.textContent = member.name;
+
+    const group = document.createElement("div");
+    group.className = "result-group";
+    group.textContent = member.group;
+
+    card.append(photo, name, group);
+    resultGrid.appendChild(card);
+  });
+}
+
+function showResult() {
+  if (selectedMembers.length !== 9) return;
+
+  renderResult();
+  if (resultSubtitle) resultSubtitle.textContent = "ワートリ好き顔メーカー";
+
+  showMode("result");
+  scrollToCurrentSection();
+}
+
+// ==========================================
+// クリップボードコピー & 画像保存
+// ==========================================
+
+function makeResultText() {
+  const lines = [
+    "ワートリ好き顔メーカー",
+    "わたしの好き顔9選",
+    ""
+  ];
+
+  selectedMembers.forEach((member, index) => {
+    lines.push(`${index + 1}位：${member.name}（${member.group}）`);
+  });
+
+  return lines.join("\n");
+}
+
+if (copyButton) {
+  copyButton.addEventListener("click", async () => {
+    const text = makeResultText();
+
+    try {
+      await navigator.clipboard.writeText(text);
+      if (resultMessage) resultMessage.textContent = "順位付きテキストをコピーしました！";
+    } catch (error) {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+
+      document.body.appendChild(textarea);
+      textarea.select();
+
+      const success = document.execCommand("copy");
+      textarea.remove();
+
+      if (resultMessage) {
+        resultMessage.textContent = success
+          ? "順位付きテキストをコピーしました！"
+          : "コピーできませんでした。ブラウザの権限を確認してね。";
+      }
+    }
+  });
+}
+
+if (saveButton) {
+  saveButton.addEventListener("click", async () => {
+    const capture = $("#result-capture");
+
+    if (typeof html2canvas !== "function") {
+      if (resultMessage) resultMessage.textContent = "画像保存ライブラリを読み込めませんでした。";
+      return;
+    }
+
+    saveButton.disabled = true;
+    saveButton.textContent = "作成中…";
+
+    try {
+      document.body.classList.add("is-capturing");
+
+      const images = [...capture.querySelectorAll("img")];
+
+      await Promise.all(
+        images.map(img => {
+          if (img.complete) return Promise.resolve();
+          return new Promise(resolve => {
+            img.addEventListener("load", resolve, { once: true });
+            img.addEventListener("error", resolve, { once: true });
+          });
+        })
+      );
+
+      const canvas = await html2canvas(capture, {
+        backgroundColor: getComputedStyle(capture).backgroundColor || "#ffffff",
+        scale: 2,
+        useCORS: true
+      });
+
+      const link = document.createElement("a");
+      link.download = "ワートリ好き顔メーカー.png";
+      link.href = canvas.toDataURL("image/png");
+      link.click();
+
+      if (resultMessage) resultMessage.textContent = "画像を保存しました！";
+    } catch (error) {
+      console.error(error);
+      if (resultMessage) resultMessage.textContent = "画像を保存できませんでした。";
+    } finally {
+      document.body.classList.remove("is-capturing");
+      saveButton.disabled = false;
+      saveButton.textContent = "画像を保存";
+    }
+  });
+}
+
+// 初期化表示
+showMode("start");
