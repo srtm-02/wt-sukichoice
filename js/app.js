@@ -1,5 +1,5 @@
 /* ==========================================
-   ワートリ好き顔メーカー (200ラウンド高精度Elo & 修正版)
+   ワートリ好き顔メーカー (200ラウンド高精度Elo版)
    ========================================== */
 
 const TOTAL_ROUNDS = 200;
@@ -16,6 +16,7 @@ const INITIAL_RATING = 1500;
 
 const $ = selector => document.querySelector(selector);
 
+// DOM要素の取得
 const startSection = $("#start-section");
 const duelMode = $("#duel-mode");
 const resultSection = $("#result-section");
@@ -30,6 +31,7 @@ const resultGrid = $("#result-grid");
 const resultSubtitle = $("#result-subtitle");
 const resultMessage = $("#result-message");
 
+const duelRestartButton = $("#duel-restart-button");
 const duelFinishButton = $("#duel-finish-button");
 const restartFromResultButton = $("#restart-from-result-button");
 const saveButton = $("#save-button");
@@ -93,9 +95,24 @@ function getCurrentKFactor() {
 function showMode(mode) {
   currentMode = mode;
 
-  startSection.hidden = mode !== "start";
-  duelMode.hidden = mode !== "duel";
-  resultSection.hidden = mode !== "result";
+  if (startSection) startSection.hidden = mode !== "start";
+  if (duelMode) duelMode.hidden = mode !== "duel";
+  if (resultSection) resultSection.hidden = mode !== "result";
+}
+
+function scrollToCurrentSection() {
+  const target = currentMode === "result"
+    ? resultSection
+    : currentMode === "duel"
+      ? duelMode
+      : startSection;
+
+  if (target) {
+    target.scrollIntoView({
+      behavior: "smooth",
+      block: "start"
+    });
+  }
 }
 
 // ==========================================
@@ -117,33 +134,6 @@ function buildRoundPlan() {
 
   return plan.slice(0, TOTAL_ROUNDS);
 }
-
-// ==========================================
-// 診断開始・リセット
-// ==========================================
-
-function startDuel() {
-  if (!Array.isArray(MEMBERS) || MEMBERS.length < 9) {
-    alert("診断には9人以上の登録が必要です。js/members.jsを確認してください。");
-    return;
-  }
-
-  // 初期レート1500、出場回数0にリセット
-  eloRatings = new Map(MEMBERS.map(member => [member.id, INITIAL_RATING]));
-  appearanceCounts = new Map(MEMBERS.map(member => [member.id, 0]));
-
-  selectedMembers = [];
-  duelIndex = 0;
-  roundPlan = buildRoundPlan();
-
-  duelFinishButton.disabled = true;
-  resultMessage.textContent = "";
-
-  showMode("duel");
-  renderDuel();
-}
-
-startButton.addEventListener("click", startDuel);
 
 // ==========================================
 // 現在のランキングリストを取得 (Eloレーティング降順)
@@ -236,7 +226,7 @@ function renderDuel() {
   const total = roundPlan.length;
   const percent = total > 0 ? Math.floor((duelIndex / total) * 100) : 0;
 
-  duelProgressText.textContent = `選択 ${percent}%`;
+  duelProgressText.textContent = `選択 ${duelIndex} / ${total}`;
   duelProgressBar.style.width = `${percent}%`;
 
   if (duelIndex >= total) {
@@ -297,18 +287,17 @@ function renderDuel() {
 
 function updateEloRatings(winner, participants) {
   const winnerRating = eloRatings.get(winner.id) ?? INITIAL_RATING;
-  const currentK = getCurrentKFactor(); // 現在の進行度に応じたK値
+  const currentK = getCurrentKFactor();
 
   participants.forEach(loser => {
     if (loser.id === winner.id) return;
 
     const loserRating = eloRatings.get(loser.id) ?? INITIAL_RATING;
 
-    // 勝利確率 (E_A, E_B) の計算式
+    // 勝利確率は 1 / (1 + 10^((R_loser - R_winner) / 400))
     const expectedWinner = 1 / (1 + Math.pow(10, (loserRating - winnerRating) / 400));
     const expectedLoser = 1 / (1 + Math.pow(10, (winnerRating - loserRating) / 400));
 
-    // 勝者と敗者のレーティング変動
     const newWinnerRating = eloRatings.get(winner.id) + currentK * (1 - expectedWinner);
     const newLoserRating = loserRating + currentK * (0 - expectedLoser);
 
@@ -324,7 +313,6 @@ function updateEloRatings(winner, participants) {
 function chooseDuelWinner(winnerMember) {
   if (duelIndex >= roundPlan.length) return;
 
-  // Eloレートのアップデート実行
   updateEloRatings(winnerMember, currentRoundMembers);
 
   duelIndex++;
@@ -332,41 +320,29 @@ function chooseDuelWinner(winnerMember) {
 }
 
 // ==========================================
-// 診断をやり直す
+// 診断開始・リセット
 // ==========================================
 
-$("#duel-restart-button").addEventListener("click", () => {
-  if (
-    duelIndex === 0 ||
-    window.confirm("最初からやり直す？ 今までの選択結果はリセットされます。")
-  ) {
-    showMode("start");
-  }
-});
-
-restartFromResultButton.addEventListener("click", () => {
-  showMode("start");
-});
-
-// ==========================================
-// レーティング上位9人を選出
-// ==========================================
-
-function finishDuel() {
-  if (
-    !Array.isArray(MEMBERS) ||
-    MEMBERS.length < 9 ||
-    duelIndex < roundPlan.length
-  ) {
+function startDuel() {
+  if (typeof MEMBERS === "undefined" || !Array.isArray(MEMBERS) || MEMBERS.length < 9) {
+    alert("診断には9人以上の登録が必要です。js/members.jsを確認してください。");
     return;
   }
 
-  const sorted = getSortedMembers();
-  selectedMembers = sorted.slice(0, 9);
-  showResult();
-}
+  // 初期レート1500、出場回数0にリセット
+  eloRatings = new Map(MEMBERS.map(member => [member.id, INITIAL_RATING]));
+  appearanceCounts = new Map(MEMBERS.map(member => [member.id, 0]));
 
-duelFinishButton.addEventListener("click", finishDuel);
+  selectedMembers = [];
+  duelIndex = 0;
+  roundPlan = buildRoundPlan();
+
+  if (duelFinishButton) duelFinishButton.disabled = true;
+  if (resultMessage) resultMessage.textContent = "";
+
+  showMode("duel");
+  renderDuel();
+}
 
 // ==========================================
 // 結果画面を表示
@@ -411,21 +387,23 @@ function showResult() {
   scrollToCurrentSection();
 }
 
-function scrollToCurrentSection() {
-  const target = currentMode === "result"
-    ? resultSection
-    : currentMode === "duel"
-      ? duelMode
-      : startSection;
+function finishDuel() {
+  if (
+    typeof MEMBERS === "undefined" ||
+    !Array.isArray(MEMBERS) ||
+    MEMBERS.length < 9 ||
+    duelIndex < roundPlan.length
+  ) {
+    return;
+  }
 
-  target.scrollIntoView({
-    behavior: "smooth",
-    block: "start"
-  });
+  const sorted = getSortedMembers();
+  selectedMembers = sorted.slice(0, 9);
+  showResult();
 }
 
 // ==========================================
-// 結果テキストをコピー
+// 結果テキストのコピー・画像保存
 // ==========================================
 
 function makeResultText() {
@@ -442,7 +420,7 @@ function makeResultText() {
   return lines.join("\n");
 }
 
-copyButton.addEventListener("click", async () => {
+async function copyResultText() {
   const text = makeResultText();
 
   try {
@@ -464,13 +442,9 @@ copyButton.addEventListener("click", async () => {
       ? "順位付きテキストをコピーしました！"
       : "コピーできませんでした。ブラウザの権限を確認してね。";
   }
-});
+}
 
-// ==========================================
-// 結果画像を保存
-// ==========================================
-
-saveButton.addEventListener("click", async () => {
+async function saveResultImage() {
   const capture = $("#result-capture");
 
   if (typeof html2canvas !== "function") {
@@ -516,7 +490,44 @@ saveButton.addEventListener("click", async () => {
     saveButton.disabled = false;
     saveButton.textContent = "画像を保存";
   }
-});
+}
 
-// 初期画面設定
+// ==========================================
+// イベントリスナーのセットアップ
+// ==========================================
+
+if (startButton) {
+  startButton.addEventListener("click", startDuel);
+}
+
+if (duelRestartButton) {
+  duelRestartButton.addEventListener("click", () => {
+    if (
+      duelIndex === 0 ||
+      window.confirm("最初からやり直す？ 今までの選択結果はリセットされます。")
+    ) {
+      showMode("start");
+    }
+  });
+}
+
+if (duelFinishButton) {
+  duelFinishButton.addEventListener("click", finishDuel);
+}
+
+if (restartFromResultButton) {
+  restartFromResultButton.addEventListener("click", () => {
+    showMode("start");
+  });
+}
+
+if (copyButton) {
+  copyButton.addEventListener("click", copyResultText);
+}
+
+if (saveButton) {
+  saveButton.addEventListener("click", saveResultImage);
+}
+
+// 初期画面表示
 showMode("start");
